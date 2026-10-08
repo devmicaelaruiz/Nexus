@@ -159,3 +159,10 @@ ul.clean{margin:4px 0 0;padding-left:18px}ul.clean li{margin:2px 0}
 @media(max-width:1100px){.tk{grid-template-columns:260px 1fr}.tk-right{display:none}}
 @media(max-width:760px){.rail{width:44px}.split{flex-direction:column}.tree{width:auto;max-height:200px}.tk{grid-template-columns:1fr}.tk-left{display:none}.addrow,.addrow2{grid-template-columns:1fr 1fr}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* login */
+.login-wrap{margin:auto;width:min(380px,92vw);padding:20px 0}
+.login{padding:26px 24px;box-shadow:0 8px 28px rgba(0,0,0,.08)}
+.login h1{font-size:22px;margin:10px 0 2px}
+.logo-l{width:40px;height:40px;border-radius:10px;background:var(--btn);color:#fff;display:grid;place-items:center;font-weight:700}
+.login-err{background:var(--red-bg);color:var(--red);border-radius:6px;padding:8px 10px;margin:10px 0 0;font-size:13px}
