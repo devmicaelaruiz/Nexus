@@ -4,6 +4,8 @@
    Web estática (GitHub Pages) + proxy Cloudflare Worker (Zendesk, Slack, IA)
    ===================================================================== */
 
+const VERSION = 'v1.1 · con login';
+
 /* ---------- utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -680,7 +682,7 @@ function loginHTML() {
     <label class="lb">Contraseña</label><input type="password" id="lg_pass" autocomplete="current-password">
     <label class="row" style="margin-top:12px"><input type="checkbox" id="lg_rem"> Mantener sesión 7 días en este equipo</label>
     <details style="margin-top:12px" ${url ? '' : 'open'}><summary>URL del Worker</summary><input type="url" id="lg_url" placeholder="https://pm-hub-proxy.tu-cuenta.workers.dev" value="${esc(url)}" style="margin-top:8px"></details>
-    <button class="btn pri" id="lg_btn" style="width:100%;justify-content:center;margin-top:16px" data-act="doLogin">Entrar</button></div></div>`;
+    <button class="btn pri" id="lg_btn" style="width:100%;justify-content:center;margin-top:16px" data-act="doLogin">Entrar</button><div class="muted sm" style="margin-top:14px;text-align:center">PM Hub ${VERSION}</div></div></div>`;
 }
 function render() {
   pendingRender = false;
@@ -956,7 +958,7 @@ function settingsView() {
   const inp = (k, label, type = 'text', hint = '') => `<label class="lb">${label}</label><input type="${type}" data-ch="set" data-k="${k}" ${type === 'number' ? 'data-n="1"' : ''} value="${esc(s[k])}">${hint ? `<div class="muted sm" style="margin-top:3px">${hint}</div>` : ''}`;
   const chk = (k, label) => `<label class="row" style="margin-top:10px"><input type="checkbox" data-ch="setChk" data-k="${k}" ${s[k] ? 'checked' : ''}> ${label}</label>`;
   const unl = C.channels.filter(c => !Object.values(S.tickets).some(t => t.slackId === c.id));
-  return `<div class="page"><h1>Ajustes</h1><p class="lead">Tus notas y pendientes se guardan solo en este navegador. Las llaves de Zendesk, Slack e IA viven en el Worker, no aquí.</p>
+  return `<div class="page"><h1>Ajustes</h1><p class="lead">Tus notas y pendientes se guardan solo en este navegador. Las llaves de Zendesk, Slack e IA viven en el Worker, no aquí. Versión ${VERSION}.</p>
     <div class="card stack" style="margin-bottom:16px"><h3>Conexión</h3>${inp('workerUrl', 'URL del Worker', 'url', 'Ej: https://pm-hub-proxy.tu-usuario.workers.dev')}
       <div class="muted sm">Sesión iniciada como <b>${esc((session() || {}).user || '')}</b>, vence ${esc(fmtTS((session() || {}).exp))}.</div>
       <div class="row"><button class="btn pri" data-act="testConn">Probar conexión</button><button class="btn" data-act="logout">${ic('logout', 14)} Cerrar sesión</button>${h ? `<span class="pill ${h.zendesk ? 'p-green' : 'p-red'}">Zendesk</span><span class="pill ${h.slack ? 'p-green' : 'p-red'}">Slack</span><span class="pill ${h.ai ? 'p-green' : 'p-red'}">IA</span><span class="pill ${h.kv ? 'p-green' : 'p-grey'}">KV</span><span class="muted sm">${esc(h.model || '')}</span>` : ''}</div></div>
