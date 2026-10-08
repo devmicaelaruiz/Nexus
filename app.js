@@ -4,7 +4,7 @@
    Web estática (GitHub Pages) + proxy Cloudflare Worker (Zendesk, Slack, IA)
    ===================================================================== */
 
-const VERSION = 'v1.1 · con login';
+const VERSION = 'v1.2 · diagnóstico Slack';
 
 /* ---------- utilidades ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -252,7 +252,9 @@ function slackText(txt, users) {
 function autoLink() {
   for (const t of Object.values(S.tickets)) {
     if (t.slackId || t.slackManualOff) continue;
-    const ch = C.channels.find(c => { const p = parseChan(c.name); return p && p.num === t.id; });
+    const used = new Set(Object.values(S.tickets).filter(x => x.slackId).map(x => x.slackId));
+    let ch = C.channels.find(c => { const p = parseChan(c.name); return p && p.num === t.id && !used.has(c.id); });
+    if (!ch) ch = C.channels.find(c => !used.has(c.id) && String(c.name).split('-').includes(String(t.id)));
     if (ch) { t.slackId = ch.id; t.slackName = ch.name; t.slackAuto = true; }
   }
 }
@@ -463,16 +465,17 @@ async function refreshTicket(id, notify) {
 /* ---------- sincronización Slack ---------- */
 async function syncSlack() {
   if (!configured() || busy.sl) return;
-  if (C.health && !C.health.slack) return;
+  if (C.health && !C.health.slack) { UI.slackErr = 'Slack no está configurado en el Worker (falta la variable SLACK_TOKEN).'; return; }
   busy.sl = true; setSync('Slack…');
   try {
     const ch = await api('/slack/channels');
     C.channels = ch.channels; C.workspaceUrl = ch.workspaceUrl || ''; C.teamId = ch.teamId || '';
     autoLink();
     const linked = Object.values(S.tickets).filter(t => t.slackId);
+    UI.slackErr = ch.channels.length ? '' : 'Slack respondió, pero no hay canales cuyo nombre empiece con pry-, evo- o dt- (o tu usuario no está en ellos).';
     await pool(linked, 2, refreshSlack);
     setSync('', '');
-  } catch (e) { setSync('', 'Slack: ' + e.message); }
+  } catch (e) { UI.slackErr = e.message; setSync('', 'Slack: ' + e.message); }
   finally { busy.sl = false; save(); softRender(); }
 }
 async function refreshSlack(t) {
@@ -808,7 +811,7 @@ function propsHTML(t, ru, ag) {
   const sug = slackSuggestions(t).slice(0, 60);
   const slackBlock = t.slackId
     ? `<div class="field row sp"><span>${ic('hash', 14)} ${esc(t.slackName)}${t.slackAuto ? ' <span class="muted sm">(auto)</span>' : ''}</span><button class="ibtn" data-act="unlinkSlack" data-id="${t.id}" title="Desvincular">${ic('x', 14)}</button></div>${t.slackArchived ? '<div class="sm" style="color:var(--amber);margin-top:4px">Canal archivado</div>' : ''}`
-    : (C.channels.length ? `<select data-ch="linkSlack" data-id="${t.id}"><option value="">Vincular canal…</option>${sug.map(c => `<option value="${c.id}">#${esc(c.name)}${c.archived ? ' (archivado)' : ''}</option>`).join('')}</select>` : `<div class="field ro muted">${C.health && !C.health.slack ? 'Slack no configurado' : 'Sin canales (aún)'}</div>`);
+    : (C.channels.length ? `<select data-ch="linkSlack" data-id="${t.id}"><option value="">Vincular canal…</option>${sug.map(c => `<option value="${c.id}">#${esc(c.name)}${c.archived ? ' (archivado)' : ''}</option>`).join('')}</select>` : `<div class="field ro muted">${C.health && !C.health.slack ? 'Slack no configurado en el Worker' : UI.slackErr ? 'Error de Slack (ver pestaña Slack)' : 'Sin canales (aún)'}</div>`);
   const zf = zdFields(t);
   return `<div class="fgrid"><label class="lb">Solicitante</label><div class="field ro">${esc(ru ? ru.name : '—')}<div class="muted sm">${esc(ru ? ru.email : '')}</div></div>
     <label class="lb">Agente asignado</label><div class="field ro">${esc(ag ? ag.name : '—')}</div>
@@ -826,8 +829,13 @@ function convTab(t) {
   if (!cs.length) return '<div class="empty">Sin comentarios cargados. Pulsa actualizar.</div>';
   return cs.map(c => `<div class="msg"><div class="av ${c.side === 'inference' ? 'inf' : ''}">${esc(initials(c.author))}</div><div style="min-width:0"><div class="mh"><b>${esc(c.author)}</b> <span class="muted">· ${fmtTS(c.at)}</span> ${ownP(c.side)}${c.public ? '' : ' <span class="pill p-grey">nota interna</span>'}</div><div class="bub ${c.public ? (c.side === 'cliente' ? '' : 'inf') : 'note'}">${esc(c.body) || '<span class="muted">(sin texto)</span>'}${c.att.length ? `<div class="muted sm" style="margin-top:8px">Adjuntos: ${esc(c.att.join(', '))}</div>` : ''}</div></div></div>`).join('');
 }
+function slackWhy(t) {
+  if (UI.slackErr) return `<b>Motivo:</b> ${esc(UI.slackErr)}`;
+  if (!C.channels.length) return '<b>Motivo:</b> todavía no se han leído los canales de Slack. Pulsa «Actualizar» y espera unos segundos.';
+  return `<b>Motivo:</b> se leyeron ${C.channels.length} canal(es) pry-/evo-/dt- pero ninguno contiene el número <b>${esc(t.id)}</b>. Elige el canal a mano en el panel izquierdo (Canal de Slack).`;
+}
 function slackTab(t) {
-  if (!t.slackId) return '<div class="empty">Este ticket no tiene canal de Slack vinculado.<br>Se vincula solo si el canal se llama <b>pry-/evo-/dt-&lt;n.º de ticket&gt;-cliente-descripción</b>; si no, elige uno en el panel izquierdo.</div>';
+  if (!t.slackId) return `<div class="empty">Este ticket no tiene canal de Slack vinculado.<br>Se vincula solo si el nombre del canal empieza con <b>pry-</b>, <b>evo-</b> o <b>dt-</b> y contiene el n.º de ticket (ej: evo-${esc(t.id)}-cliente-descripción).<div style="margin-top:12px;color:var(--ink)">${slackWhy(t)}</div></div>`;
   const ms = C.slack[t.id] || [];
   if (!ms.length) return '<div class="empty">Sin mensajes cargados todavía.</div>';
   return `<div class="sl">${ms.map(m => `<div class="msg"><div class="av inf">${esc(initials(m.user))}</div><div style="min-width:0"><div class="mh"><b>${esc(m.user)}</b> <span class="muted">· ${fmtTS(m.at)}${m.thread ? ' · en hilo' : ''}</span></div><div class="bub">${esc(m.text)}</div></div></div>`).join('')}</div>`;
@@ -969,7 +977,7 @@ function settingsView() {
       <div class="row" style="margin-top:12px"><button class="btn" data-act="askNotif">Activar avisos del navegador</button><span class="muted sm">Estado: ${'Notification' in window ? Notification.permission : 'no disponible'}. Los avisos funcionan mientras la pestaña esté abierta (fíjala).</span></div>${inp('myName', 'Tu nombre (firma de plantillas)')}</div>
     <div class="card" style="margin-bottom:16px"><h3>Datos</h3><div class="row wrap"><button class="btn" data-act="exportData">${ic('down', 14)} Exportar copia</button><label class="btn">${ic('up', 14)} Importar copia<input type="file" accept=".json" style="display:none" data-ch="importData"></label>
       ${chk('syncKV', 'Sincronizar con la nube gratuita (KV)')}<button class="btn" data-act="kvPush">Subir ahora</button><button class="btn" data-act="kvPull">Descargar</button></div></div>
-    <div class="card"><h3>Canales de Slack detectados sin ticket (${unl.length})</h3><div class="muted sm" style="margin:6px 0 10px">Nombres válidos: pry-… / evo-… / dt-…  Si no tienen número de ticket, vincúlalos a mano desde el ticket.</div><div class="ztags">${unl.slice(0, 80).map(c => `<span class="ztag">#${esc(c.name)}${c.archived ? ' ✓' : ''}</span>`).join('') || '<span class="muted">—</span>'}</div></div></div>`;
+    <div class="card"><h3>Canales de Slack detectados sin ticket (${unl.length})</h3>${UI.slackErr ? `<div class="login-err" style="margin:8px 0">Slack: ${esc(UI.slackErr)}</div>` : ''}<div class="muted sm" style="margin:6px 0 10px">Nombres válidos: pry-… / evo-… / dt-…  Si no tienen número de ticket, vincúlalos a mano desde el ticket.</div><div class="ztags">${unl.slice(0, 80).map(c => `<span class="ztag">#${esc(c.name)}${c.archived ? ' ✓' : ''}</span>`).join('') || '<span class="muted">—</span>'}</div></div></div>`;
 }
 
 /* ---------- toasts y modal ---------- */
