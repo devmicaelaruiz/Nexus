@@ -62,6 +62,7 @@ const ICONS = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>',
   mail: '<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><polyline points="22,6 12,13 2,6"/>',
   up: '<polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   down: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
 };
 const ic = (n, s = 16) => `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[n] || ''}</svg>`;
@@ -87,7 +88,7 @@ const LS = 'pm_state_v1', LC = 'pm_cache_v1';
 function defaults() {
   return {
     settings: {
-      workerUrl: '', appKey: '', pollSec: 60, slackPollSec: 120,
+      workerUrl: '', pollSec: 60, slackPollSec: 120,
       keywords: 'evolutivo, deuda técnica, proyecto', internalDomains: 'inferencelabs9.com',
       myName: '', dailyTime: '17:30', staleDays: 2, leadMin: 60, replyHours: 4,
       notif: true, includeSolved: false, syncKV: false,
@@ -97,7 +98,7 @@ function defaults() {
   };
 }
 const loadJSON = (k, def) => { try { const v = JSON.parse(localStorage.getItem(k)); return v || def; } catch { return def; } };
-let S = (() => { const d = defaults(), s = loadJSON(LS, null); return s ? { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } } : d; })();
+let S = (() => { const d = defaults(), s = loadJSON(LS, null); const r = s ? { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } } : d; delete r.settings.appKey; return r; })();
 let C = { forms: [], fields: [], users: {}, comments: {}, slack: {}, channels: [], workspaceUrl: '', base: '', health: null, ...loadJSON(LC, {}) };
 
 let saveT = null;
@@ -115,15 +116,38 @@ function save() {
   }, 300);
 }
 
+/* ---------- sesión (login contra el Worker) ---------- */
+const SESS = 'pm_session_v1';
+function session() { try { const s = JSON.parse(localStorage.getItem(SESS)); if (s && s.token && s.exp > Date.now()) return s; } catch { } return null; }
+async function login(url, user, password, remember) {
+  let r;
+  try { r = await fetch(url + '/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user, password, remember }) }); }
+  catch { throw new Error('No se pudo conectar con el Worker. Revisa la URL.'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('Error ' + r.status));
+  localStorage.setItem(SESS, JSON.stringify({ token: j.token, exp: j.exp, user: j.user }));
+  S.settings.workerUrl = url; save();
+}
+function logout(msg) {
+  localStorage.removeItem(SESS);
+  try { Object.values(TM).forEach(clearInterval); } catch { }
+  C.comments = {}; C.slack = {}; C.health = null;
+  UI.loginMsg = msg || ''; UI.bell = false; UI.route = { v: 'dash', id: 'all' };
+  $('#modal').innerHTML = ''; save(); render();
+}
+
 /* ---------- API (Worker) ---------- */
-const configured = () => !!(S.settings.workerUrl && S.settings.appKey);
+const configured = () => !!(S.settings.workerUrl && session());
 async function api(path, opts = {}) {
-  const s = S.settings;
-  if (!configured()) throw new Error('Configura la URL del Worker y la clave en Ajustes');
-  const r = await fetch(s.workerUrl.replace(/\/+$/, '') + path, { ...opts, headers: { 'x-app-key': s.appKey, ...(opts.headers || {}) } });
+  const s = S.settings, ses = session();
+  if (!s.workerUrl || !ses) throw new Error('Inicia sesión');
+  const r = await fetch(s.workerUrl.replace(/\/+$/, '') + path, { ...opts, headers: { 'x-session': ses.token, ...(opts.headers || {}) } });
   const txt = await r.text();
   let j; try { j = JSON.parse(txt); } catch { j = { raw: txt }; }
-  if (!r.ok) { const e = new Error(j.error || j.msg || txt.slice(0, 200) || ('HTTP ' + r.status)); e.status = r.status; e.retry = j.retry_after; throw e; }
+  if (!r.ok) {
+    if (r.status === 401) logout('Tu sesión venció. Inicia sesión de nuevo.');
+    const e = new Error(j.error || j.msg || txt.slice(0, 200) || ('HTTP ' + r.status)); e.status = r.status; e.retry = j.retry_after; throw e;
+  }
   return j;
 }
 async function ai(system, user, { json = true, tries = 3 } = {}) {
@@ -632,6 +656,7 @@ function confirmArchive(tid) {
 const UI = {
   route: { v: 'dash', id: 'all' }, tabs: [], tab: {}, tpl: {}, extra: {}, busy: {}, sync: '', err: '', bell: false,
   fAll: { types: [], q: '', status: '', client: '', owner: '', slack: '', attention: false },
+  loginMsg: '', loginForm: { url: '', user: '' },
   daily: { scope: 'all' }, pend: { owner: '', type: '', overdue: false }, tplEdit: null, forceMeta: false,
 };
 
@@ -647,8 +672,19 @@ function softRender() {
   if ($('#modal').innerHTML) { pendingRender = true; return; }
   render();
 }
+function loginHTML() {
+  const f = UI.loginForm, url = f.url || S.settings.workerUrl || '';
+  return `<div class="login-wrap"><div class="login card"><div class="logo-l">PM</div><h1>PM Hub</h1><p class="muted" style="margin:0 0 6px">Inicia sesión para ver tus tickets.</p>
+    ${UI.loginMsg ? `<div class="login-err">${esc(UI.loginMsg)}</div>` : ''}
+    <label class="lb">Usuario</label><input type="text" id="lg_user" autocomplete="username" value="${esc(f.user)}">
+    <label class="lb">Contraseña</label><input type="password" id="lg_pass" autocomplete="current-password">
+    <label class="row" style="margin-top:12px"><input type="checkbox" id="lg_rem"> Mantener sesión 7 días en este equipo</label>
+    <details style="margin-top:12px" ${url ? '' : 'open'}><summary>URL del Worker</summary><input type="url" id="lg_url" placeholder="https://pm-hub-proxy.tu-cuenta.workers.dev" value="${esc(url)}" style="margin-top:8px"></details>
+    <button class="btn pri" id="lg_btn" style="width:100%;justify-content:center;margin-top:16px" data-act="doLogin">Entrar</button></div></div>`;
+}
 function render() {
   pendingRender = false;
+  if (!session() || !S.settings.workerUrl) { $('#app').innerHTML = loginHTML(); return; }
   const sc = $('.view') ? $('.view').scrollTop : 0, tb = $('.tk-body') ? $('.tk-body').scrollTop : 0;
   $('#app').innerHTML = railHTML() + `<div class="main">${tabsHTML()}<div class="view">${viewHTML()}</div></div>` + (UI.bell ? bellHTML() : '');
   const v = $('.view'); if (v) v.scrollTop = sc; const b = $('.tk-body'); if (b) b.scrollTop = tb;
@@ -663,7 +699,7 @@ function railHTML() {
     ${b('dash', 'layout', 'Dashboards')}${b('pending', 'check', 'Pendientes y siguientes pasos')}${b('daily', 'table', 'Update del día')}${b('templates', 'file', 'Plantillas')}${b('archive', 'archive', 'Archivo de cierres')}
     <div class="sp"></div>
     <button data-act="bell" title="Notificaciones">${ic('bell', 20)}<span class="dot" id="bellCount" style="display:none">0</span></button>
-    ${b('settings', 'settings', 'Ajustes')}</nav>`;
+    ${b('settings', 'settings', 'Ajustes')}<button data-act="logout" title="Cerrar sesión">${ic('logout', 20)}</button></nav>`;
 }
 function syncHTML() {
   return UI.err ? `<span class="err" title="${esc(UI.err)}">${esc(UI.err)}</span>` : UI.sync ? `<span>${esc(UI.sync)}</span>` : S.lastSync ? `<span>Actualizado ${ago(S.lastSync)}</span>` : '';
@@ -920,9 +956,10 @@ function settingsView() {
   const inp = (k, label, type = 'text', hint = '') => `<label class="lb">${label}</label><input type="${type}" data-ch="set" data-k="${k}" ${type === 'number' ? 'data-n="1"' : ''} value="${esc(s[k])}">${hint ? `<div class="muted sm" style="margin-top:3px">${hint}</div>` : ''}`;
   const chk = (k, label) => `<label class="row" style="margin-top:10px"><input type="checkbox" data-ch="setChk" data-k="${k}" ${s[k] ? 'checked' : ''}> ${label}</label>`;
   const unl = C.channels.filter(c => !Object.values(S.tickets).some(t => t.slackId === c.id));
-  return `<div class="page"><h1>Ajustes</h1><p class="lead">Todo se guarda solo en tu navegador. Las llaves de Zendesk, Slack e IA viven en el Worker, no aquí.</p>
-    <div class="card stack" style="margin-bottom:16px"><h3>Conexión</h3>${inp('workerUrl', 'URL del Worker', 'url', 'Ej: https://pm-hub-proxy.tu-usuario.workers.dev')}${inp('appKey', 'Clave de acceso (APP_KEY)', 'password')}
-      <div class="row"><button class="btn pri" data-act="testConn">Probar conexión</button>${h ? `<span class="pill ${h.zendesk ? 'p-green' : 'p-red'}">Zendesk</span><span class="pill ${h.slack ? 'p-green' : 'p-red'}">Slack</span><span class="pill ${h.ai ? 'p-green' : 'p-red'}">IA</span><span class="pill ${h.kv ? 'p-green' : 'p-grey'}">KV</span><span class="muted sm">${esc(h.model || '')}</span>` : ''}</div></div>
+  return `<div class="page"><h1>Ajustes</h1><p class="lead">Tus notas y pendientes se guardan solo en este navegador. Las llaves de Zendesk, Slack e IA viven en el Worker, no aquí.</p>
+    <div class="card stack" style="margin-bottom:16px"><h3>Conexión</h3>${inp('workerUrl', 'URL del Worker', 'url', 'Ej: https://pm-hub-proxy.tu-usuario.workers.dev')}
+      <div class="muted sm">Sesión iniciada como <b>${esc((session() || {}).user || '')}</b>, vence ${esc(fmtTS((session() || {}).exp))}.</div>
+      <div class="row"><button class="btn pri" data-act="testConn">Probar conexión</button><button class="btn" data-act="logout">${ic('logout', 14)} Cerrar sesión</button>${h ? `<span class="pill ${h.zendesk ? 'p-green' : 'p-red'}">Zendesk</span><span class="pill ${h.slack ? 'p-green' : 'p-red'}">Slack</span><span class="pill ${h.ai ? 'p-green' : 'p-red'}">IA</span><span class="pill ${h.kv ? 'p-green' : 'p-grey'}">KV</span><span class="muted sm">${esc(h.model || '')}</span>` : ''}</div></div>
     <div class="card" style="margin-bottom:16px"><h3>Qué tickets entran</h3>${inp('keywords', 'Palabras clave del Formulario de Zendesk', 'text', 'Entran los tickets cuyo «Formulario» contenga alguna (separadas por coma): evolutivo, deuda técnica, proyecto.')}
       ${inp('internalDomains', 'Dominios del equipo Inference', 'text', 'Sirve para distinguir quién escribió: cliente o Inference.')}${chk('includeSolved', 'Incluir tickets resueltos al sincronizar')}
       <div class="muted sm" style="margin-top:10px">Formularios detectados: ${C.forms.length ? C.forms.map(f => `<span class="ztag">${esc(f.name)}</span>`).join(' ') : '—'}</div></div>
@@ -962,6 +999,17 @@ function pushStep(t, type, x, src) {
 }
 
 const ACT = {
+  doLogin: async () => {
+    const url = $('#lg_url').value.trim().replace(/\/+$/, ''), user = $('#lg_user').value.trim(), pass = $('#lg_pass').value, rem = $('#lg_rem').checked;
+    UI.loginForm = { url, user };
+    if (!url || !user || !pass) { UI.loginMsg = 'Completa usuario, contraseña y URL del Worker'; return render(); }
+    const btn = $('#lg_btn'); btn.disabled = true; btn.textContent = 'Entrando…';
+    try { await login(url, user, pass, rem); }
+    catch (e) { UI.loginMsg = e.message; return render(); }
+    UI.loginMsg = ''; render(); startTimers();
+    await loadHealth(); await syncAll();
+  },
+  logout: () => { if (confirm('¿Cerrar sesión? Se borra de este navegador la caché de mensajes; tus pendientes y notas se conservan.')) logout('Sesión cerrada.'); },
   nav: d => go(d.v, d.id),
   bell: () => { UI.bell = !UI.bell; render(); },
   alertGo: d => { const a = S.notifications.find(x => x.id === d.aid); if (a) a.read = true; save(); UI.bell = false; d.id && S.tickets[d.id] ? go('ticket', d.id) : go('daily'); },
@@ -1065,7 +1113,7 @@ const ACT = {
   /* ajustes */
   testConn: async () => { await loadHealth(); render(); C.health ? toast('Conexión correcta') : toast(UI.err || 'No se pudo conectar', 'err'); },
   askNotif: async () => { if ('Notification' in window) await Notification.requestPermission(); render(); },
-  exportData: () => { const o = { settings: { ...S.settings, appKey: '' } }; KV_KEYS.forEach(k => o[k] = S[k]); download(`pm-hub-${isoDay(new Date())}.json`, JSON.stringify(o, null, 1), 'application/json'); },
+  exportData: () => { const o = { settings: { ...S.settings } }; KV_KEYS.forEach(k => o[k] = S[k]); download(`pm-hub-${isoDay(new Date())}.json`, JSON.stringify(o, null, 1), 'application/json'); },
   kvPush: () => kvPush(true),
   kvPull: () => kvPull(),
 };
@@ -1106,7 +1154,11 @@ document.addEventListener('change', e => {
   const el = e.target.closest('[data-ch]'); if (!el) return;
   const fn = CH[el.dataset.ch]; if (fn) fn(el);
 });
-document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.dataset.ch === 'dfilter') e.target.blur(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+  if (e.target.dataset.ch === 'dfilter') e.target.blur();
+  if (e.target.closest('.login')) ACT.doLogin();
+});
 document.addEventListener('focusout', () => setTimeout(() => {
   if (!pendingRender) return; const a = document.activeElement;
   if (!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) && !$('#modal').innerHTML) render();
